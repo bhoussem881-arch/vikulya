@@ -65,23 +65,37 @@
 (() => {
   const N = 196;
   const cv = document.getElementById('cv');
-  const ctx = cv.getContext('2d');
+  const ctx = cv.getContext('2d', { alpha: false });
+  const track = document.getElementById('track');
+  const fill = document.getElementById('fill');
+  const hint = document.getElementById('hint');
+  const touch = matchMedia('(pointer: coarse)').matches;
   const frames = new Array(N);
-  let loaded = 0, target = 0, current = 0, lastDrawn = -1;
+  let loaded = 0, target = 0, current = 0, lastDrawn = -1, lastW = 0, maxScroll = 1;
+
+  // Shorter page on phones so one or two swipes moves through the card quickly.
+  track.style.height = (touch ? 600 : 1000) + 'vh';
+  fill.style.width = '100%';
+  fill.style.transformOrigin = '0 0';
 
   const src = i => window.FRAMES[i];
 
-  function size() {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  function size(force) {
+    // Ignore height-only changes from the phone's address bar showing/hiding (avoids flicker and lag).
+    if (!force && Math.abs(innerWidth - lastW) < 2 && cv.width) { measure(); return; }
+    lastW = innerWidth;
+    const dpr = Math.min(window.devicePixelRatio || 1, touch ? 1.5 : 2);
     cv.width = Math.round(cv.clientWidth * dpr);
     cv.height = Math.round(cv.clientHeight * dpr);
     lastDrawn = -1;
+    measure();
   }
+  function measure() { maxScroll = Math.max(1, document.documentElement.scrollHeight - innerHeight); }
 
   function nearestLoaded(i) {
     for (let d = 0; d < N; d++) {
-      if (frames[i - d] && frames[i - d].complete && frames[i - d].naturalWidth) return frames[i - d];
-      if (frames[i + d] && frames[i + d].complete && frames[i + d].naturalWidth) return frames[i + d];
+      if (frames[i - d]) return frames[i - d];
+      if (frames[i + d]) return frames[i + d];
     }
     return null;
   }
@@ -90,65 +104,67 @@
     const img = nearestLoaded(i);
     if (!img) return;
     const W = cv.width, H = cv.height;
-    const iw = img.naturalWidth, ih = img.naturalHeight;
-    // Contain on wide screens; on tall phones zoom a little so it reads bigger (white edges blend in).
+    const iw = img.width, ih = img.height;
     let s = Math.min(W / iw, H / ih);
     if (H > W) s *= 1.12;
     const w = iw * s, h = ih * s;
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, W, H);
-    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
   }
 
-  function progress() {
-    const max = document.documentElement.scrollHeight - innerHeight;
-    return max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 0;
-  }
-
-  function onScroll() {
-    const p = progress();
-    target = p * (N - 1);
-    document.getElementById('fill').style.width = (p * 100) + '%';
-    document.getElementById('hint').style.opacity = p > 0.02 ? 0 : 1;
-  }
-
   function tick() {
-    current += (target - current) * 0.25;
-    if (Math.abs(target - current) < 0.01) current = target;
+    const p = Math.min(1, Math.max(0, scrollY / maxScroll));
+    target = p * (N - 1);
+    current += (target - current) * 0.45;
+    if (Math.abs(target - current) < 0.05) current = target;
     const i = Math.round(current);
-    if (i !== lastDrawn) { draw(i); lastDrawn = i; }
+    if (i !== lastDrawn) {
+      draw(i); lastDrawn = i;
+      fill.style.transform = 'scaleX(' + p.toFixed(4) + ')';
+      hint.style.opacity = p > 0.02 ? 0 : 1;
+    }
     requestAnimationFrame(tick);
   }
 
-  // Load first frame, then the rest in an order that fills gaps evenly.
+  // Load in an order that fills gaps evenly, and decode each frame up front so drawing never stalls.
   const order = [];
   for (let step = 32; step >= 1; step = step / 2) for (let i = 0; i < N; i += step) if (!order.includes(i)) order.push(i);
   for (let i = 0; i < N; i++) if (!order.includes(i)) order.push(i);
 
   const loader = document.getElementById('loader');
   const pct = document.getElementById('pct');
+  const targetW = touch ? 1100 : 1600;
   let queue = 0;
+  function done() {
+    loaded++;
+    pct.textContent = 'loading ' + Math.round(loaded / N * 100) + '%';
+    if (loaded === Math.min(N, 40) || loaded === N) { loader.style.opacity = 0; setTimeout(() => loader.hidden = true, 500); }
+    lastDrawn = -1;
+    loadNext();
+  }
   function loadNext() {
     if (queue >= order.length) return;
     const i = order[queue++];
     const img = new Image();
-    img.decoding = 'async';
-    img.onload = img.onerror = () => {
-      loaded++;
-      pct.textContent = 'loading ' + Math.round(loaded / N * 100) + '%';
-      if (loaded === Math.min(N, 40) || loaded === N) { loader.style.opacity = 0; setTimeout(() => loader.hidden = true, 500); }
-      lastDrawn = -1;
-      loadNext();
+    img.onload = async () => {
+      try {
+        frames[i] = window.createImageBitmap
+          ? await createImageBitmap(img, { resizeWidth: Math.min(targetW, img.naturalWidth), resizeQuality: 'high' })
+          : img;
+      } catch (e) {
+        try { await img.decode(); } catch (_) {}
+        frames[i] = img;
+      }
+      done();
     };
+    img.onerror = done;
     img.src = src(i);
-    frames[i] = img;
   }
   for (let k = 0; k < 6; k++) loadNext();
 
-  addEventListener('resize', () => { size(); onScroll(); });
-  addEventListener('scroll', onScroll, { passive: true });
-  size(); onScroll(); tick();
+  addEventListener('resize', () => size(false));
+  size(true); tick();
 })();
 </script>
 </body>
